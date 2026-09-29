@@ -24,3 +24,7 @@ app_icon_preview.png
 Thumbs.db
 desktop.ini
 .DS_Store
+
+# 发布用 exe（走 GitHub Release 附件，不入库）
+WorkAid_v*.exe
+WorkAid.exe
