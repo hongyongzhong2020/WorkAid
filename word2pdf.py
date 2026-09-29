@@ -17,6 +17,7 @@ import math
 import os
 import re
 import sys
+import ctypes
 import queue
 import threading
 import traceback
@@ -43,6 +44,79 @@ except Exception:
 import tkinter as tk
 from tkinter import ttk
 
+# ---------------------------------------------------------------------------
+# 高 DPI 适配（必须在创建任何窗口之前调用）
+# 声明 Per-Monitor DPI Aware，让系统不再对界面做位图拉伸，
+# 从根本上消除高分屏（125%/150% 等）下文字发虚、圆角发毛的问题。
+# ---------------------------------------------------------------------------
+def _enable_dpi_awareness():
+    """开启进程 DPI 感知，返回真实缩放比例（96dpi = 1.0）。"""
+    if sys.platform != "win32":
+        return 1.0
+    try:
+        # 2 = PROCESS_PER_MONITOR_DPI_AWARE（Win8.1+）
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+    except Exception:
+        try:
+            ctypes.windll.user32.SetProcessDPIAware()   # Win7 回退
+        except Exception:
+            return 1.0
+    try:
+        hdc = ctypes.windll.user32.GetDC(0)
+        LOGPIXELSX = 88
+        dpi = ctypes.windll.gdi32.GetDeviceCaps(hdc, LOGPIXELSX)
+        ctypes.windll.user32.ReleaseDC(0, hdc)
+        if dpi:
+            return dpi / 96.0
+    except Exception:
+        pass
+    return 1.0
+
+
+UI_SCALE = _enable_dpi_awareness()
+
+
+def s(value):
+    """把按 96dpi 设计的逻辑像素值换算为当前屏幕的真实像素值。
+
+    界面中所有硬编码的尺寸（窗口大小、内边距、控件长宽、圆角半径等）
+    都是按 100% 缩放设计的，统一经此函数换算后，
+    在 125% / 150% 等缩放下视觉大小保持一致。
+    """
+    if UI_SCALE == 1.0:
+        return value
+    return int(round(value * UI_SCALE))
+
+
+def _apply_titlebar_colors(root, bg="#111111", text="#f0f0f0", border="#111111"):
+    """Windows 11（Build 22000+）原生标题栏染色，与应用深色主题融为一体。
+
+    通过 DwmSetWindowAttribute 设置标题栏背景 / 文字 / 窗口边框颜色，
+    仅作用于本应用窗口，不影响系统其它部分，退出后无残留。
+    Windows 10 及更早系统不支持这些属性（返回错误码），静默跳过保持默认。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        dwm = ctypes.windll.dwmapi
+        # tkinter 顶层窗口真正的 HWND 是内部子窗口的父窗口
+        hwnd = ctypes.windll.user32.GetParent(root.winfo_id())
+
+        def _colorref(hx):
+            hx = hx.lstrip("#")
+            r, g, b = int(hx[0:2], 16), int(hx[2:4], 16), int(hx[4:6], 16)
+            return ctypes.c_uint((b << 16) | (g << 8) | r)   # COLORREF = 0x00BBGGRR
+
+        def _apply(attr, value):
+            dwm.DwmSetWindowAttribute(hwnd, attr, ctypes.byref(value), ctypes.sizeof(value))
+
+        _apply(20, ctypes.c_uint(1))       # 深色模式：最小化/关闭按钮用浅色图标
+        _apply(35, _colorref(bg))          # DWMWA_CAPTION_COLOR 标题栏背景
+        _apply(36, _colorref(text))        # DWMWA_TEXT_COLOR 标题文字
+        _apply(34, _colorref(border))      # DWMWA_BORDER_COLOR 窗口边框
+    except Exception:
+        pass
+
 # COM 接口（Windows + Word 必需）
 try:
     import win32com.client as win32
@@ -52,7 +126,7 @@ except Exception:
     HAS_WIN32 = False
 
 APP_NAME = "WorkAid"
-APP_VERSION = "1.10.3"
+APP_VERSION = "1.11.7"
 
 # 版权与反馈信息（起始年份固定，结束年份自动取当前系统年份）
 COPYRIGHT_START_YEAR = 2026
@@ -123,7 +197,7 @@ PALETTE = {
     "fg": "#ffffff",        # 主文字
     "muted": "#8b949e",     # 次要文字
     "input": "#202020",     # 输入类控件背景（无边框方案下靠底色差区分）
-    "primary": "#375a7f",
+    "primary": "#007AFF",
     "secondary": "#2c2c2c",
     "success": "#00bc8c",
     "danger": "#e74c3c",
@@ -200,6 +274,29 @@ def round_rect(canvas, x1, y1, x2, y2, radius, steps=None, **kwargs):
     return canvas.create_polygon(pts, **kwargs)
 
 
+def _load_scaled_photo(rel_path):
+    """加载 PNG 并在高 DPI 下平滑缩放到当前缩放尺寸，返回 tk.PhotoImage。
+
+    优先用 PIL 的 LANCZOS 重采样（任意倍数都平滑），
+    PIL 不可用时回退为不缩放（或整数倍 zoom）。
+    """
+    path = _resource_path(rel_path)
+    img = tk.PhotoImage(file=path)
+    if UI_SCALE <= 1.0:
+        return img
+    try:
+        from PIL import Image as _PILImage, ImageTk as _PILTk
+        with _PILImage.open(path) as pil:
+            pil = pil.convert("RGBA")
+            size = (max(1, round(pil.width * UI_SCALE)),
+                    max(1, round(pil.height * UI_SCALE)))
+            pil = pil.resize(size, _PILImage.LANCZOS)
+            return _PILTk.PhotoImage(pil)
+    except Exception:  # noqa: BLE001
+        factor = max(1, int(UI_SCALE))
+        return img.zoom(factor, factor) if factor > 1 else img
+
+
 def render_bg_photo(master, w, h):
     """生成纯色背景图（深蓝夜色，无纹理）。"""
     photo = tk.PhotoImage(width=w, height=h, master=master)
@@ -261,11 +358,11 @@ def register_round_styles(style):
                         bordercolor=PALETTE["card"],
                         lightcolor=PALETTE["card"],
                         darkcolor=PALETTE["card"],
-                        borderwidth=0, relief="flat", rowheight=28)
+                        borderwidth=0, relief="flat", rowheight=s(28))
         style.configure("Treeview.Heading",
                         background=PALETTE["card"],
                         foreground=PALETTE["muted"],
-                        borderwidth=0, relief="flat", padding=(8, 6))
+                        borderwidth=0, relief="flat", padding=(s(8), s(6)))
         style.map("Treeview",
                   background=[("selected", PALETTE["primary"])],
                   foreground=[("selected", PALETTE["fg"])])
@@ -332,7 +429,7 @@ class RoundButton(tk.Canvas):
         img = None
         if os.path.exists(path):
             try:
-                img = tk.PhotoImage(file=path)
+                img = _load_scaled_photo(os.path.join("icons", key + ".png"))
             except Exception:  # noqa: BLE001
                 img = None
         cls._PNG_CACHE[key] = img
@@ -341,6 +438,10 @@ class RoundButton(tk.Canvas):
     def __init__(self, master, text="", command=None, bootstyle="secondary",
                  radius=CTRL_RADIUS, pad_x=18, pad_y=9, font=None, fg=None,
                  parent_bg=None, icon=None, **kw):
+        # 高 DPI：像素类参数统一按缩放比例换算（字体已由 Tk 的 point 机制处理）
+        radius, pad_x, pad_y = s(radius), s(pad_x), s(pad_y)
+        self._icon_size = s(self.ICON_SIZE)   # 图标显示尺寸（当前缩放）
+        self._icon_gap = s(6)                 # 图标与文字间距
         self._text = text
         key = icon if icon is not None else self.ICON_BY_TEXT.get(text, "")
         self._icon = self.GLYPH_BY_TEXT.get(text, "") if icon is None else ""
@@ -390,9 +491,9 @@ class RoundButton(tk.Canvas):
     def _measure(self):
         text_w = self._font.measure(self._text) if self._text else 0
         if self._photo is not None:
-            icon_w = self.ICON_SIZE + 6
+            icon_w = self._icon_size + self._icon_gap
         elif self._icon:
-            icon_w = self._icon_font.measure(self._icon) + 6
+            icon_w = self._icon_font.measure(self._icon) + self._icon_gap
         else:
             icon_w = 0
         line_h = max(self._font.metrics("linespace"),
@@ -413,22 +514,22 @@ class RoundButton(tk.Canvas):
         cy = self._bh / 2.0
         text_w = self._font.measure(self._text) if self._text else 0
         if self._photo is not None:
-            icon_w = self.ICON_SIZE
+            icon_w = self._icon_size
         elif self._icon:
             icon_w = self._icon_font.measure(self._icon)
         else:
             icon_w = 0
-        block = text_w + (icon_w + 6 if icon_w else 0)
+        block = text_w + (icon_w + self._icon_gap if icon_w else 0)
         x = (self._bw - block) / 2.0
         if self._photo is not None:
-            self.create_image(x + self.ICON_SIZE / 2.0, cy,
+            self.create_image(x + self._icon_size / 2.0, cy,
                               image=self._photo, tags="content")
-            x += self.ICON_SIZE + 6
+            x += self._icon_size + self._icon_gap
         elif icon_w:
             self.create_text(x + icon_w / 2.0, cy, text=self._icon,
                              fill=self._fg, font=self._icon_font,
                              tags="content")
-            x += icon_w + 6
+            x += icon_w + self._icon_gap
         if text_w:
             self.create_text(x + text_w / 2.0, cy, text=self._text,
                              fill=self._fg, font=self._font,
@@ -509,6 +610,8 @@ class RoundEntry(tk.Frame):
 
     def __init__(self, master, textvariable=None, height=34, radius=CTRL_RADIUS,
                  pad_x=12, font=None, parent_bg=None, **kw):
+        # 高 DPI：像素类参数按缩放换算
+        height, radius, pad_x = s(height), s(radius), s(pad_x)
         self._parent_bg = parent_bg or PALETTE["bg"]
         self._radius = radius
         self._pad_x = pad_x
@@ -526,7 +629,7 @@ class RoundEntry(tk.Frame):
             font=font or tkfont.Font(family=UI_FONT, size=UI_FONT_SIZE))
         self._win = self.canvas.create_window(
             pad_x, height / 2.0, window=self.entry, anchor="w",
-            height=max(18, height - 14))
+            height=max(s(18), height - s(14)))
         self.canvas.bind("<Configure>", self._redraw)
         self._redraw()
 
@@ -539,8 +642,8 @@ class RoundEntry(tk.Frame):
                    tags="cardbg")
         self.canvas.tag_lower("cardbg")
         self.canvas.itemconfigure(self._win,
-                                  width=max(20, w - 2 * self._pad_x),
-                                  height=max(18, h - 14))
+                                  width=max(s(20), w - 2 * self._pad_x),
+                                  height=max(s(18), h - s(14)))
 
     # 让外部像用 Entry 一样拿到变量
     def get(self):
@@ -568,6 +671,8 @@ class RoundCombo(tk.Canvas):
     def __init__(self, master, values=(), width=12, height=34,
                  radius=CTRL_RADIUS, pad_x=12, font=None, parent_bg=None,
                  command=None, **kw):
+        # 高 DPI：像素类参数按缩放换算
+        height, radius, pad_x = s(height), s(radius), s(pad_x)
         self._values = [str(v) for v in values]
         self._index = 0 if self._values else -1
         self._command = command
@@ -577,7 +682,7 @@ class RoundCombo(tk.Canvas):
         self._font = font or tkfont.Font(family=UI_FONT, size=UI_FONT_SIZE)
         char_w = self._font.measure("0") or 8
         widest = max([self._font.measure(v) for v in self._values] + [0])
-        w = max(widest + 2 * pad_x + 26, int(char_w * int(width)) + 24)
+        w = max(widest + 2 * pad_x + s(26), int(char_w * int(width)) + s(24))
         tk.Canvas.__init__(self, master, width=w, height=height, bd=0,
                            highlightthickness=0, bg=self._parent_bg,
                            cursor="hand2", **kw)
@@ -645,6 +750,7 @@ class RoundProgress(tk.Canvas):
 
     def __init__(self, master, mode="determinate", height=14,
                  parent_bg=None, **kw):
+        height = s(height)                      # 高 DPI：按缩放换算
         self._value = 0.0
         self._maximum = 100.0
         self._parent_bg = parent_bg or PALETTE["bg"]
@@ -711,14 +817,17 @@ class RoundCheck(tk.Canvas):
 
     def __init__(self, master, text="", variable=None, command=None,
                  parent_bg=None, font=None, **kw):
+        # 高 DPI：方块尺寸与间距按缩放换算
+        self._box = s(self.BOX)
+        self._gap = s(9)
         self._text = text
         self._var = variable if variable is not None else tk.BooleanVar(False)
         self._command = command
         self._font = font or tkfont.Font(family=UI_FONT, size=9)
         self._parent_bg = parent_bg or PALETTE["bg"]
         line_h = self._font.metrics("linespace")
-        self._bh = max(self.BOX, line_h) + 8
-        self._bw = self.BOX + 9 + self._font.measure(text) + 4
+        self._bh = max(self._box, line_h) + s(8)
+        self._bw = self._box + self._gap + self._font.measure(text) + s(4)
         tk.Canvas.__init__(self, master, width=self._bw, height=self._bh, bd=0,
                            highlightthickness=0, bg=self._parent_bg,
                            cursor="hand2", **kw)
@@ -732,16 +841,21 @@ class RoundCheck(tk.Canvas):
     def _draw(self):
         self.delete("all")
         h = float(self._bh)
-        top = (h - self.BOX) / 2.0
+        box = self._box
+        top = (h - box) / 2.0
         checked = bool(self._var.get())
         fill = PALETTE["primary"] if checked else PALETTE["input"]
-        round_rect(self, 0, top, self.BOX, top + self.BOX, CTRL_RADIUS,
+        round_rect(self, 0, top, box, top + box, s(CTRL_RADIUS),
                    fill=fill, outline="", width=0)
         if checked:
-            self.create_line(4.0, top + 9.0, 7.2, top + 13.0, 14.0, top + 5.5,
-                             fill=PALETTE["fg"], width=2,
+            # 对勾按方块尺寸等比换算（基准 18px 方块时的坐标）
+            k = box / 18.0
+            self.create_line(4.0 * k, top + 9.0 * k,
+                             7.2 * k, top + 13.0 * k,
+                             14.0 * k, top + 5.5 * k,
+                             fill=PALETTE["fg"], width=max(1, s(2)),
                              capstyle="round", joinstyle="round")
-        self.create_text(self.BOX + 9, h / 2.0, text=self._text, anchor="w",
+        self.create_text(box + self._gap, h / 2.0, text=self._text, anchor="w",
                          fill=PALETTE["fg"], font=self._font)
 
     def _toggle(self, _event=None):
@@ -762,6 +876,10 @@ class RoundCard(tk.Frame):
 
     def __init__(self, master, radius=CARD_RADIUS, padding=8, bg=None,
                  outline=None, parent_bg=None, height=None, **kw):
+        # 高 DPI：圆角半径与内边距按缩放换算
+        radius, padding = s(radius), s(padding)
+        if height:
+            height = s(height)
         self._parent_bg = parent_bg or PALETTE["bg"]
         self._bg = bg or PALETTE["card"]
         # outline 参数保留以兼容旧调用签名；外观已改为无描边。
@@ -808,13 +926,13 @@ class RoundNotebook(tk.Frame):
         self._ver_font = tkfont.Font(family=UI_FONT, size=8)
         self._logo_img = None
         try:
-            self._logo_img = tk.PhotoImage(file=_resource_path("logo_small.png"))
+            self._logo_img = _load_scaled_photo("logo_small.png")
         except Exception:  # noqa: BLE001
             self._logo_img = None
 
-        # 侧边栏：LOGO + 名称 + 纵向标签
-        self._sidebar = tk.Canvas(self, width=174, bd=0, highlightthickness=0,
-                                  bg=PALETTE["card"], cursor="hand2")
+        # 侧边栏：LOGO + 名称 + 纵向标签（底色与窗口统一，靠标签色块与右分隔线区分）
+        self._sidebar = tk.Canvas(self, width=s(174), bd=0, highlightthickness=0,
+                                  bg=PALETTE["bg"], cursor="hand2")
         self._sidebar.pack(side="left", fill="y")
         self._sidebar.bind("<Button-1>", self._on_click)
         self._sidebar.bind("<Configure>", lambda _e: self._redraw(), add="+")
@@ -827,40 +945,40 @@ class RoundNotebook(tk.Frame):
     # -- 绘制 ---------------------------------------------------------------
     def _redraw(self):
         c = self._sidebar
-        w = c.winfo_width() or 174
-        h = c.winfo_height() or 600
+        w = c.winfo_width() or s(174)
+        h = c.winfo_height() or s(600)
         c.delete("all")
         self._boxes = []
         # 右侧分隔线
         c.create_line(w - 1, 0, w - 1, h, fill=PALETTE["border"])
 
         # 顶部 LOGO + 产品名 + 版本
-        y = 22
+        y = s(22)
         if self._logo_img is not None:
-            c.create_image(w / 2.0, y + 28, image=self._logo_img)
-            y += 66
-        c.create_text(w / 2.0, y + 10, text=APP_NAME,
+            c.create_image(w / 2.0, y + s(28), image=self._logo_img)
+            y += s(66)
+        c.create_text(w / 2.0, y + s(10), text=APP_NAME,
                       fill=PALETTE["fg"], font=self._brand_font)
-        c.create_text(w / 2.0, y + 28, text=f"v{APP_VERSION}",
+        c.create_text(w / 2.0, y + s(28), text=f"v{APP_VERSION}",
                       fill=PALETTE["muted"], font=self._ver_font)
 
         # 纵向标签按钮
-        y = y + 52
-        bw = w - 24
-        x1 = 12
+        y = y + s(52)
+        bw = w - s(24)
+        x1 = s(12)
         n = max(len(self._tabs), 1)
         # 标签较多时自动压缩高度与间距，保证 8 个标签也能完整显示
-        bh = 38
-        gap = 8
-        avail = h - y - 12            # 底部留 12px 余量
+        bh = s(38)
+        gap = s(8)
+        avail = h - y - s(12)         # 底部留 12px 余量
         if n * (bh + gap) - gap > avail:
-            gap = max(4, int((avail - n * 30) / max(n - 1, 1)))
-            bh = max(26, int((avail - gap * (n - 1)) / n))
+            gap = max(s(4), int((avail - n * s(30)) / max(n - 1, 1)))
+            bh = max(s(26), int((avail - gap * (n - 1)) / n))
         for i, (_child, text) in enumerate(self._tabs):
             label = text.strip() or ("标签 %d" % (i + 1))
             active = (i == self._index)
             fill = PALETTE["primary"] if active else PALETTE["secondary"]
-            round_rect(c, x1, y, x1 + bw, y + bh, CTRL_RADIUS,
+            round_rect(c, x1, y, x1 + bw, y + bh, s(CTRL_RADIUS),
                        fill=fill, outline="", width=0)
             c.create_text(x1 + bw / 2.0, y + bh / 2.0, text=label,
                           fill=PALETTE["fg"] if active else PALETTE["muted"],
@@ -1118,12 +1236,15 @@ class Word2PDFApp:
         gw, gh = self._compute_startup_geometry()
         wx, wy = self._compute_startup_position(gw, gh)
         self.root.geometry("%dx%d+%d+%d" % (gw, gh, wx, wy))
-        self.root.minsize(780, min(600, gh))
+        self.root.minsize(s(780), min(s(600), gh))
 
         try:
             self.root.iconbitmap(_resource_path("app.ico"))
         except Exception:
             pass
+
+        # Win11：标题栏染成与界面一致的深色（Win10 及以下自动跳过）
+        _apply_titlebar_colors(self.root, bg=PALETTE["card"], text="#f0f0f0", border=PALETTE["card"])
 
         if HAS_TTB:
             self.style = tb.Style(theme=self.DARK_THEME)
@@ -1166,7 +1287,7 @@ class Word2PDFApp:
         Label = _widget_class("Label")
 
         # ---- 底部版权 / 反馈栏（先 pack，固定在窗口最底部，渐变背景）----
-        self.footer = BgCanvas(self.root, height=34)
+        self.footer = BgCanvas(self.root, height=s(34))
         self.footer.pack(side="bottom", fill="x")
         self.footer.bind("<Configure>", self._draw_footer, add="+")
         self._footer_item = None
@@ -1229,8 +1350,13 @@ class Word2PDFApp:
 
     # -- 启动定位 ------------------------------------------------------------
     def _compute_startup_geometry(self):
-        """返回启动窗口尺寸 (宽, 高)，按屏幕自适应避免高分屏溢出。"""
-        gw, gh = 960, 720
+        """返回启动窗口尺寸 (宽, 高)，按屏幕自适应避免高分屏溢出。
+
+        960x720 是按 100% 缩放设计的基准尺寸，在开启 DPI 感知后
+        （1:1 渲染，不再被系统拉伸）需要按缩放比例换算，
+        才能在高分屏上保持与以往一致的视觉大小。
+        """
+        gw, gh = s(960), s(720)
         try:
             sh = self.root.winfo_screenheight()
             gh = min(gh, int(sh * 0.85))
@@ -1329,19 +1455,21 @@ class Word2PDFApp:
                            command=command, parent_bg=PALETTE["bg"], **kw)
 
     def _draw_footer(self, _event=None):
-        """在渐变背景上绘制底部版权文字与右下角缩放角标。"""
+        """在渐变背景上绘制上侧分隔线、底部版权文字与右下角缩放角标。"""
         f = self.footer
         f.delete("footer")
         f.redraw_bg()
         w = f.winfo_width() or 880
         h = f.winfo_height() or 34
+        # 顶部分隔线：页脚与内容区的分界
+        f.create_line(0, 0, w, 0, fill=PALETTE["border"], tags="footer")
         self._footer_item = f.create_text(
             w / 2, h / 2, text=copyright_text(), fill=PALETTE["muted"],
             font=("Microsoft YaHei UI", 9), tags="footer")
 
     def _make_status_bar(self, master, var):
         """状态栏：渐变背景 + 动态文字（替代纯色 Label）。"""
-        bar = BgCanvas(master, height=24)
+        bar = BgCanvas(master, height=s(24))
         holder = {"id": None}
 
         def draw(_e=None):
@@ -1439,7 +1567,7 @@ class Word2PDFApp:
         self.btn_down.pack(side="left", padx=6)
 
         # ---- 拖拽区（圆角虚线框） ----
-        self.drop_canvas = tk.Canvas(self.word_tab, height=96, highlightthickness=0,
+        self.drop_canvas = tk.Canvas(self.word_tab, height=s(96), highlightthickness=0,
                                      bd=0, bg=BG, cursor="hand2")
         self.drop_canvas.pack(fill="x", padx=PX, pady=(10, 0))
         self.drop_canvas.bind("<Button-1>", lambda e: self._add_files())
@@ -1503,14 +1631,6 @@ class Word2PDFApp:
         self.out_entry.pack(side="left", fill="x", expand=True, padx=(10, 8))
         self._button(out_frame, "浏览…", self.BTN_SECONDARY,
                      self._choose_out_dir).pack(side="left")
-
-        # ---- 选项（圆角勾选框） ----
-        opt_frame = BgCanvas(self.word_tab)
-        opt_frame.pack(pady=(8, 0))  # 水平居中
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(opt_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # ---- 进度条 + 转换按钮 ----
         prog_frame = BgCanvas(self.word_tab)
@@ -1775,8 +1895,6 @@ class Word2PDFApp:
             self._log(f"转换结束：成功 {ok} 个，失败 {err} 个，跳过 {skip} 个")
             self._set_btn_style(self.btn_convert, "开始转换", self.BTN_SUCCESS)
             self._worker = None
-            if self.open_dir_var.get() and ok > 0:
-                self._open_out_dir()
         elif kind == "stopped":
             self.status_var.set("已停止")
             self._log("转换已手动停止")
@@ -1786,14 +1904,6 @@ class Word2PDFApp:
             self._log("发生严重错误：\n" + payload)
             self._set_btn_style(self.btn_convert, "开始转换", self.BTN_SUCCESS)
             self._worker = None
-
-    def _open_out_dir(self):
-        out_dir = self.out_var.get().strip()
-        if out_dir and os.path.isdir(out_dir):
-            try:
-                os.startfile(out_dir)
-            except Exception:
-                pass
 
     # -- 日志 / 关闭 ---------------------------------------------------------
     def _log(self, text):
@@ -2945,11 +3055,6 @@ class ImagesToPdfTab:
         Label(opt_frame, text="（仅 A4 模式生效）", foreground=PALETTE["muted"],
               font=("Microsoft YaHei UI", 9)).pack(side="left")
 
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(opt_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left", padx=(24, 0))
-
         # 进度 + 转换按钮
         prog_frame = BgCanvas(self.parent)
         prog_frame.pack(fill="x", padx=PX, pady=(12, 0))
@@ -3250,11 +3355,6 @@ class ImagesToPdfTab:
             if state == "ok":
                 self.status_var.set("合并完成")
                 self._set_convert_btn("开始转换", self.app.BTN_SUCCESS)
-                if self.open_dir_var.get():
-                    try:
-                        os.startfile(os.path.dirname(out_pdf))
-                    except Exception:
-                        pass
             elif state == "skip":
                 self.status_var.set("已停止")
                 self._log("合并已手动停止（未生成完整 PDF）")
@@ -3393,14 +3493,6 @@ class MergePdfsTab:
         self.out_entry.pack(side="left", fill="x", expand=True, padx=(10, 8))
         self._btn(out_frame, "浏览…", B.BTN_SECONDARY,
                   self._choose_out_file).pack(side="left")
-
-        # 选项
-        opt_frame = BgCanvas(self.parent)
-        opt_frame.pack(pady=(10, 0))  # 水平居中
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(opt_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # 进度 + 合并按钮
         prog_frame = BgCanvas(self.parent)
@@ -3717,11 +3809,6 @@ class MergePdfsTab:
             if state == "ok":
                 self.status_var.set("合并完成")
                 self._set_convert_btn("开始合并", self.app.BTN_SUCCESS)
-                if self.open_dir_var.get():
-                    try:
-                        os.startfile(os.path.dirname(out_pdf))
-                    except Exception:
-                        pass
             elif state == "skip":
                 self.status_var.set("已停止")
                 self._log("合并已手动停止（未生成完整 PDF）")
@@ -3832,14 +3919,6 @@ class SplitPdfTab:
         self.out_var.trace_add("write", lambda *_a: setattr(self, "_out_touched", True))
         self._btn(out_frame, "浏览…", B.BTN_SECONDARY,
                   self._choose_out_dir).pack(side="left")
-
-        # 选项
-        chk_frame = BgCanvas(self.parent)
-        chk_frame.pack(pady=(10, 0))
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(chk_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # 进度 + 拆分按钮
         prog_frame = BgCanvas(self.parent)
@@ -4053,13 +4132,6 @@ class SplitPdfTab:
                 self.status_var.set("拆分完成")
                 self.btn_convert.configure(text="开始拆分",
                                            bootstyle=self.app.BTN_SUCCESS)
-                if self.open_dir_var.get():
-                    try:
-                        out_dir = self.out_var.get().strip() or \
-                            os.path.dirname(self.src_var.get())
-                        os.startfile(out_dir)
-                    except Exception:
-                        pass
             elif state == "skip":
                 self.status_var.set("已停止")
                 self.btn_convert.configure(text="开始拆分",
@@ -4237,14 +4309,6 @@ class WatermarkTab:
         self.size_combo.current(1)
         self.size_combo.pack(side="left", padx=(10, 0))
         self._on_type()
-
-        # 选项：完成后打开输出文件夹
-        chk_frame = BgCanvas(self.parent)
-        chk_frame.pack(pady=(10, 0))
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(chk_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # 输出目录
         out_frame = BgCanvas(self.parent)
@@ -4560,13 +4624,6 @@ class WatermarkTab:
             self.status_var.set(f"完成：成功 {ok}/{len(self.files)}")
             self._log(f"全部完成：成功 {ok} 个，失败 "
                       f"{len(self.files) - ok} 个")
-            if self.open_dir_var.get():
-                try:
-                    out_dir = self.out_var.get().strip() or \
-                        os.path.dirname(self.files[0][0])
-                    os.startfile(out_dir)
-                except Exception:
-                    pass
             self._set_convert_btn()
 
     def _set_convert_btn(self):
@@ -4679,14 +4736,6 @@ class PdfToWordTab:
                 self.empty_label.dnd_bind("<<Drop>>", self._on_drop)
             except Exception:  # noqa: BLE001
                 pass
-
-        # 选项：完成后打开输出文件夹
-        chk_frame = BgCanvas(self.parent)
-        chk_frame.pack(pady=(10, 0))
-        self.open_dir_var = tk.BooleanVar(value=False)
-        RoundCheck(chk_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # 输出目录
         out_frame = BgCanvas(self.parent)
@@ -4945,13 +4994,6 @@ class PdfToWordTab:
             self.status_var.set(f"完成：成功 {ok}/{len(self.files)}")
             self._log(f"全部完成：成功 {ok} 个，失败 "
                       f"{len(self.files) - ok} 个")
-            if self.open_dir_var.get():
-                try:
-                    out_dir = self.out_var.get().strip() or \
-                        os.path.dirname(self.files[0][0])
-                    os.startfile(out_dir)
-                except Exception:
-                    pass
             self._set_convert_btn()
 
     def _set_convert_btn(self):
@@ -5074,14 +5116,6 @@ class PptToPdfTab:
         self.out_entry.pack(side="left", fill="x", expand=True, padx=(10, 8))
         self._btn(out_frame, "浏览…", B.BTN_SECONDARY,
                   self._choose_out_dir).pack(side="left")
-
-        # 选项
-        opt_frame = BgCanvas(self.parent)
-        opt_frame.pack(pady=(10, 0))  # 水平居中
-        self.open_dir_var = tk.BooleanVar(value=False)  # 默认不勾选
-        RoundCheck(opt_frame, text="完成后打开输出文件夹",
-                   variable=self.open_dir_var,
-                   parent_bg=BG).pack(side="left")
 
         # 进度 + 转换按钮
         prog_frame = BgCanvas(self.parent)
@@ -5356,8 +5390,6 @@ class PptToPdfTab:
             self._log(f"转换结束：成功 {ok} 个，失败 {err} 个，跳过 {skip} 个")
             self._set_convert_btn("开始转换", self.app.BTN_SUCCESS)
             self._worker = None
-            if self.open_dir_var.get() and ok > 0:
-                self._open_out_dir()
         elif kind == "stopped":
             self.status_var.set("已停止")
             self._log("转换已手动停止")
@@ -5367,14 +5399,6 @@ class PptToPdfTab:
             self._log("发生严重错误：\n" + payload)
             self._set_convert_btn("开始转换", self.app.BTN_SUCCESS)
             self._worker = None
-
-    def _open_out_dir(self):
-        out_dir = self.out_var.get().strip()
-        if out_dir and os.path.isdir(out_dir):
-            try:
-                os.startfile(out_dir)
-            except Exception:
-                pass
 
     def _log(self, text):
         self.log_text.configure(state="normal")
