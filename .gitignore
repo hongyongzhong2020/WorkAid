@@ -1,0 +1,26 @@
+# 构建产物与虚拟环境
+.venv312/
+build/
+dist/
+__pycache__/
+*.pyc
+*.pyo
+
+# 开发期临时文件
+_*.png
+_*.jpg
+_*.tgz
+_wm_selftest/
+_icons_pkg/
+
+# 图标设计过程素材（最终产物为 app.ico 与 icons/）
+logo_*.png
+logo_*.jpg
+app_old.ico
+app_ai.ico
+app_icon_preview.png
+
+# 系统文件
+Thumbs.db
+desktop.ini
+.DS_Store
