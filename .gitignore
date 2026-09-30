@@ -20,6 +20,9 @@ app_old.ico
 app_ai.ico
 app_icon_preview.png
 
+# 例外：打包必需资源（WorkAid.spec 的 datas 依赖），必须入库
+!logo_small.png
+
 # 系统文件
 Thumbs.db
 desktop.ini
