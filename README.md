@@ -1,3 +1,7 @@
+<div align="center">
+  <img src="WorkAid_showcase_3x4.png" alt="WorkAid 界面预览" width="460">
+</div>
+
 # WorkAid
 
 > 一站式文档批处理工具箱 —— 10 个常用文档处理功能，批量处理，拖拽即用。
@@ -68,10 +72,15 @@ python word2pdf.py
 
 ```
 WorkAid/
-├── word2pdf.py          # 主程序（全部逻辑与自绘 UI）
+├── word2pdf.py          # 主入口：主窗口与页面装配
+├── pages.py             # 10 个功能页（各标签页的界面与批处理流程）
+├── widgets.py           # 自绘控件（圆角按钮 / 输入框 / 下拉框 / 进度条 / 卡片）
+├── converters.py        # 全部转换与处理函数（无 GUI 依赖）
+├── theme.py             # 主题、配色、DPI 缩放、Windows 标题栏配色
 ├── WorkAid.spec         # PyInstaller 打包配置
 ├── app.ico              # 应用图标
 ├── gen_icons.py         # 图标生成脚本
+├── donate_qr.png        # 微信赞赏码
 └── icons/               # 界面图标资源
 ```
 
@@ -79,6 +88,7 @@ WorkAid/
 
 | 版本 | 变更 |
 | --- | --- |
+| 1.13.1 | 修复「PDF 加水印」切到图片水印后没有选图入口的问题；新增水印图缩略图预览；图片模式自动隐藏不生效的颜色/字号选项 |
 | 1.13.0 | 新增「图片格式转换」：PNG / JPG / WEBP / BMP / TIFF / ICO 批量互转 |
 | 1.12.8 | "支持作者"弹窗标题文字居中显示 |
 | 1.12.7 | "支持作者"弹窗标题栏不再显示图标，更清爽 |

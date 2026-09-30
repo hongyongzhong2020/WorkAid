@@ -158,7 +158,7 @@ def _clear_titlebar_icon(win):
 
 
 APP_NAME = "WorkAid"
-APP_VERSION = "1.13.0"
+APP_VERSION = "1.13.1"
 
 
 # 版权与反馈信息（起始年份固定，结束年份自动取当前系统年份）

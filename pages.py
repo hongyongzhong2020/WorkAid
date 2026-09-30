@@ -1865,22 +1865,27 @@ class WatermarkTab:
         opt1 = BgCanvas(self.parent)
         opt1.pack(fill="x", padx=PX, pady=(10, 0))
         Label(opt1, text="水印类型").pack(side="left")
+        # 选中项回调在界面就绪后再挂（见下方 on_change），否则 current() 会提前触发
         self.type_combo = RoundCombo(
             opt1, width=14, parent_bg=BG,
             values=("文字水印", "图片水印"))
         self.type_combo.current(0)
         self.type_combo.pack(side="left", padx=(10, 18))
         self.lbl_text = Label(opt1, text="水印文字")
-        self.lbl_text.pack(side="left")
         self.text_var = tk.StringVar(value="内部资料")
         self.text_entry = RoundEntry(opt1, textvariable=self.text_var,
                                      height=36, width=170, parent_bg=BG)
-        self.text_entry.pack(side="left", padx=(10, 8))
         self.img_var = tk.StringVar()
+        # 图片水印的选图入口：切到「图片水印」时才出现在「水印类型」右侧
         self.btn_img = self._btn(opt1, "选择图片…", B.BTN_SECONDARY,
                                  self._choose_image)
+        self.img_thumb = tk.Label(opt1, bg=BG, bd=0)
+        self._thumb_photo = None
         self.img_label = Label(opt1, text="", foreground=PALETTE["muted"])
         self.img_label.configure(font=("Microsoft YaHei UI", 9))
+        # 固定 pack 次序：文字标签 / 输入框（或选图按钮）→ 缩略图 → 文件名
+        self.lbl_text.pack(side="left")
+        self.text_entry.pack(side="left", padx=(10, 8))
         self.img_label.pack(side="left", padx=(8, 0))
 
         opt2 = BgCanvas(self.parent)
@@ -1890,22 +1895,31 @@ class WatermarkTab:
             opt2, width=13, parent_bg=BG, values=("平铺整页", "页面居中"))
         self.layout_combo.current(0)
         self.layout_combo.pack(side="left", padx=(10, 18))
-        Label(opt2, text="颜色").pack(side="left")
+        self.lbl_color = Label(opt2, text="颜色")
+        self.lbl_color.pack(side="left")
         self.color_combo = RoundCombo(
             opt2, width=9, parent_bg=BG, values=WM_COLORS)
         self.color_combo.current(0)
         self.color_combo.pack(side="left", padx=(10, 18))
-        Label(opt2, text="浓度").pack(side="left")
+        self.lbl_opacity = Label(opt2, text="浓度")
+        self.lbl_opacity.pack(side="left")
         self.opacity_combo = RoundCombo(
             opt2, width=11, parent_bg=BG, values=WM_OPACITY)
         self.opacity_combo.current(1)
         self.opacity_combo.pack(side="left", padx=(10, 18))
-        Label(opt2, text="字号").pack(side="left")
+        self.lbl_size = Label(opt2, text="字号")
+        self.lbl_size.pack(side="left")
         self.size_combo = RoundCombo(
             opt2, width=10, parent_bg=BG, values=WM_FONTSIZE)
         self.size_combo.current(1)
         self.size_combo.pack(side="left", padx=(10, 0))
+        # 类型联动提示：图片水印不使用颜色与字号（该两项随之隐藏）
+        self.opt2_hint = Label(opt2, text="", foreground=PALETTE["muted"])
+        self.opt2_hint.configure(font=("Microsoft YaHei UI", 9))
+        self.opt2_hint.pack(side="left", padx=(10, 0))
         self._on_type()
+        # 界面已就绪，此时再挂回调：切换「水印类型」才会真正联动
+        self.type_combo.on_change(self._on_type)
 
         # 输出目录
         out_frame = BgCanvas(self.parent)
@@ -1950,30 +1964,75 @@ class WatermarkTab:
         log_sb.pack(side="right", fill="y")
 
     # -- 交互 ----------------------------------------------------------------
-    def _on_type(self):
-        """切换水印类型：文字模式显示文字输入，图片模式显示选择图片。"""
+    def _on_type(self, *_args):
+        """切换水印类型：文字模式显示输入框，图片模式显示选图入口。
+
+        颜色 / 字号只对文字水印生效（add_watermark 的图片分支不读这两项），
+        故图片模式下直接隐藏，避免「改了没效果」的困惑。
+        """
+        if not hasattr(self, "btn_img"):
+            return                     # 构建期间被提前触发，界面尚未就绪
         by_image = self.type_combo.current() == 1
         if by_image:
             self.lbl_text.pack_forget()
             self.text_entry.pack_forget()
-            self.btn_img.pack(side="left", padx=(0, 0),
-                              before=self.img_label)
+            self.btn_img.pack(side="left", before=self.img_label)
+            self.img_thumb.pack(side="left", padx=(8, 2),
+                                before=self.img_label)
+            for w in (self.lbl_color, self.color_combo,
+                      self.lbl_size, self.size_combo):
+                w.pack_forget()
         else:
             self.btn_img.pack_forget()
-            self.img_label.configure(text="")
+            self.img_thumb.pack_forget()
             self.lbl_text.pack(side="left", before=self.img_label)
             self.text_entry.pack(side="left", padx=(10, 8),
                                  before=self.img_label)
+            # 按原次序恢复：颜色 ← 浓度之前，字号 ← 提示之前
+            self.lbl_color.pack(side="left", before=self.lbl_opacity)
+            self.color_combo.pack(side="left", padx=(10, 18),
+                                  before=self.lbl_opacity)
+            self.lbl_size.pack(side="left", before=self.opt2_hint)
+            self.size_combo.pack(side="left", padx=(10, 0),
+                                 before=self.opt2_hint)
+        self._sync_img_label()
+        if hasattr(self, "opt2_hint"):
+            self.opt2_hint.configure(
+                text="（颜色与字号仅文字水印可用）" if by_image else "")
+
+    def _sync_img_label(self):
+        """刷新已选水印图的文件名显示；未选图时在图片模式下给出灰字提示。"""
+        picked = self.img_var.get().strip()
+        if self.type_combo.current() == 1:
+            self.img_label.configure(
+                text=os.path.basename(picked)[:24] if picked else "未选择图片")
+        else:
+            self.img_label.configure(text="")
 
     def _choose_image(self):
         path = filedialog.askopenfilename(
             title="选择水印图片（建议透明底 PNG）",
             filetypes=[("图片文件", "*.png;*.jpg;*.jpeg;*.bmp;*.gif"),
                        ("所有文件", "*.*")])
-        if path:
-            self.img_var.set(os.path.normpath(path))
-            self.img_label.configure(
-                text=os.path.basename(path)[:24])
+        if not path:
+            return
+        path = os.path.normpath(path)
+        self.img_var.set(path)
+        self._sync_img_label()
+        self._load_thumb_image(path)
+
+    def _load_thumb_image(self, path):
+        """载入水印图缩略图；读取失败时静默降级为不显示缩略图。"""
+        try:
+            from PIL import Image, ImageTk
+            with Image.open(path) as im:
+                im.thumbnail((s(26), s(26)), Image.LANCZOS)
+                # 必须由 self 持有 PhotoImage 引用，局部变量会被 GC 掉导致空白
+                self._thumb_photo = ImageTk.PhotoImage(im)
+            self.img_thumb.configure(image=self._thumb_photo)
+        except Exception:  # noqa: BLE001
+            self._thumb_photo = None
+            self.img_thumb.configure(image="")
 
     def _choose_out_dir(self):
         d = filedialog.askdirectory(title="选择 PDF 保存位置")
@@ -2124,9 +2183,14 @@ class WatermarkTab:
             return
         wm_type = "image" if self.type_combo.current() == 1 else "text"
         image = self.img_var.get().strip()
-        if wm_type == "image" and not image:
-            messagebox.showwarning("提示", "图片水印模式请先「选择图片…」。")
-            return
+        if wm_type == "image":
+            if not image:
+                messagebox.showwarning("提示", "图片水印模式请先「选择图片…」。")
+                return
+            if not os.path.isfile(image):
+                messagebox.showwarning(
+                    "提示", "水印图片不存在（可能已被移动或删除），请重新选择。")
+                return
         text = self.text_var.get().strip()
         if wm_type == "text" and not text:
             messagebox.showwarning("提示", "请填写水印文字。")

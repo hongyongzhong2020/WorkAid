@@ -26,10 +26,15 @@ desktop.ini
 .DS_Store
 
 # 一次性开发脚本与备份（不入库）
+_*.py
 _split.py
 _test_*.py
 _word2pdf_backup.py
 _build.log
+
+# 界面现状截图与设计过程稿（开发期素材，不入库）
+ui_now_*.png
+WorkAid_UI设计方案.html
 
 # 发布用 exe（走 GitHub Release 附件，不入库）
 WorkAid_v*.exe
@@ -37,3 +42,6 @@ WorkAid.exe
 
 # 自测临时产物目录
 _selftest/
+
+# 展示图中文名副本（仓库内使用 ASCII 名的 WorkAid_showcase_3x4.png）
+WorkAid_展示图_*.png

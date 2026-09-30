@@ -480,6 +480,15 @@ class RoundCombo(tk.Canvas):
         if self._command is not None:
             self._command(self.get())
 
+    def on_change(self, callback):
+        """界面构建完成后再绑定选中项回调。
+
+        current() / set() / select_index() 都会立即触发 command，若在构造函数
+        里绑定，current(0) 会在后续控件尚未创建时就把回调跑一遍。所以需要联动的
+        下拉框统一先建控件、再调用本方法挂回调。
+        """
+        self._command = callback
+
 
 
 class RoundProgress(tk.Canvas):
