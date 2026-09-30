@@ -1,7 +1,7 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('app.ico', '.'), ('logo_small.png', '.'), ('icons', 'icons')]
+datas = [('app.ico', '.'), ('logo_small.png', '.'), ('donate_qr.png', '.'), ('icons', 'icons')]
 binaries = []
 hiddenimports = ['tkinterdnd2', 'pythoncom', 'pywintypes']
 tmp_ret = collect_all('ttkbootstrap')

@@ -25,6 +25,15 @@ Thumbs.db
 desktop.ini
 .DS_Store
 
+# 一次性开发脚本与备份（不入库）
+_split.py
+_test_*.py
+_word2pdf_backup.py
+_build.log
+
 # 发布用 exe（走 GitHub Release 附件，不入库）
 WorkAid_v*.exe
 WorkAid.exe
+
+# 自测临时产物目录
+_selftest/
